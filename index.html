@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+
+	<head>
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<link rel="stylesheet" href="bootstrap-3.3.7-dist/css/bootstrap.css">
+		<script src="jquery-3.4.1.js"></script>
+		<script src="bootstrap-3.3.7-dist/js/bootstrap.js"></script>
+
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.0.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-vis@1.0.2/dist/tfjs-vis.umd.min.js"></script>
+
+    <script>
+
+
+
+async function getData() {
+  // From a dataset on cars, get miles per gallon and horsepower.
+  const carsDataReq = await fetch('https://storage.googleapis.com/tfjs-tutorials/carsData.json');  
+  const carsData = await carsDataReq.json();  
+  const cleaned = carsData.map(car => ({
+    mpg: car.Miles_per_Gallon,
+    horsepower: car.Horsepower,
+  }))
+  .filter(car => (car.mpg != null && car.horsepower != null));
+  
+  return cleaned;
+}
+
+async function run() {
+  // Load and plot the original input data that we are going to train on.
+  const data = await getData();
+  const values = data.map(d => ({
+    x: d.horsepower,
+    y: d.mpg,
+  }));
+  
+  const model = createModel()
+
+  const tensorData = convertToTensor(data);
+  const {inputs, labels} = tensorData;
+      
+  // Train the model
+  for (let i=0; i<25; ++i) {
+    await trainModel(model, inputs, labels)
+    testModel(model, data, tensorData)
+  }
+}
+
+document.addEventListener('DOMContentLoaded', run)
+
+function testModel(model, inputData, normalizationData) {
+  const {inputMax, inputMin, labelMin, labelMax} = normalizationData;  
+  
+  // Generate predictions for a uniform range of numbers between 0 and 1;
+  // We un-normalize the data by doing the inverse of the min-max scaling 
+  // that we did earlier.
+  const [xs, preds] = tf.tidy(() => {
+    
+    const xs = tf.linspace(0, 1, 100);      
+    const preds = model.predict(xs.reshape([100, 1]));      
+    
+    const unNormXs = xs
+      .mul(inputMax.sub(inputMin))
+      .add(inputMin);
+    
+    const unNormPreds = preds
+      .mul(labelMax.sub(labelMin))
+      .add(labelMin);
+    
+    // Un-normalize the data
+    return [unNormXs.dataSync(), unNormPreds.dataSync()];
+  });
+  
+ 
+  const predictedPoints = Array.from(xs).map((val, i) => {
+    return {x: val, y: preds[i]}
+  });
+
+  const originalPoints = inputData.map(d => ({
+    x: d.horsepower, y: d.mpg,
+  }));
+
+
+  tfvis.render.scatterplot(
+    {name: 'Model Predictions vs Original Data'}, 
+    {values: [originalPoints, predictedPoints], series: ['original', 'predicted']}, 
+    {
+      xLabel: 'Horsepower',
+      yLabel: 'MPG',
+      height: 300
+    }
+  );
+}
+
+
+function createModel() {
+  const input = tf.input({ shape:[1] })
+  const a = tf.layers.dense({units: 8, useBias:true}).apply(input)
+  const b = tf.layers.activation({activation:'tanh'}).apply(a)
+  const c = tf.layers.dense({units: 8, useBias:true}).apply(b)
+  const d = tf.layers.elu().apply(c)
+  const e = tf.layers.dense({units: 8, useBias:true}).apply(d)
+  const f = tf.layers.reLU().apply(e)
+  const g = tf.layers.dense({units: 8, useBias:true}).apply(f)
+  const h = tf.layers.elu().apply(g)
+  const output = tf.layers.dense({units: 1, useBias:true}).apply(h)
+  const model = tf.model({ inputs:input, outputs:output })
+  model.compile({loss: 'meanSquaredError', optimizer: 'sgd'})
+  return model
+}
+
+/**
+ * Convert the input data to tensors that we can use for machine 
+ * learning. We will also do the important best practices of _shuffling_
+ * the data and _normalizing_ the data
+ * MPG on the y-axis.
+ */
+function convertToTensor(data) {
+  // Wrapping these calculations in a tidy will dispose any 
+  // intermediate tensors.
+  
+  return tf.tidy(() => {
+    // Step 1. Shuffle the data    
+    tf.util.shuffle(data);
+
+    // Step 2. Convert data to Tensor
+    const inputs = data.map(d => d.horsepower)
+    const labels = data.map(d => d.mpg);
+
+    const inputTensor = tf.tensor2d(inputs, [inputs.length, 1]);
+    const labelTensor = tf.tensor2d(labels, [labels.length, 1]);
+
+    //Step 3. Normalize the data to the range 0 - 1 using min-max scaling
+    const inputMax = inputTensor.max();
+    const inputMin = inputTensor.min();  
+    const labelMax = labelTensor.max();
+    const labelMin = labelTensor.min();
+
+    const normalizedInputs = inputTensor.sub(inputMin).div(inputMax.sub(inputMin));
+    const normalizedLabels = labelTensor.sub(labelMin).div(labelMax.sub(labelMin));
+
+    return {
+      inputs: normalizedInputs,
+      labels: normalizedLabels,
+      // Return the min/max bounds so we can use them later.
+      inputMax,
+      inputMin,
+      labelMax,
+      labelMin,
+    }
+  });  
+}
+
+async function trainModel(model, inputs, labels) {
+  // Prepare the model for training.  
+  model.compile({
+    optimizer: tf.train.adam(),
+    loss: tf.losses.meanSquaredError,
+    metrics: ['mse', 'accuracy'],
+  });
+  
+  const batchSize = 320;
+  const epochs = 10;
+  
+  return await model.fit(inputs, labels, {
+    batchSize,
+    epochs,
+    shuffle: true,
+    callbacks: tfvis.show.fitCallbacks(
+      { name: 'Training Performance' },
+      ['loss'], 
+      { height: 200, callbacks: ['onEpochEnd'] }
+    )
+  });
+}
+
+
+
+    </script>
+    <style>
+      body script {
+        display:block;
+        white-space:pre-wrap;
+        font-family:monospace;
+      }
+    </style>
+	</head>
+
+	<body>
+    <div class="container-fluid">
+      <h1>Learnable lang</h1>
+      <p>Hello. A nice, quiet day outside here. Why not join us as we make a simple programming language?</p>
+      <p>Now, we don't want to add things left and right without a purpose. We'd like our lang to be able to evolve, and choking it with advancedness is not our idea of a good time.</p>
+      <p>So, let's first identify a few features we'd like to have access to:</p>
+      <ol>
+        <li>Being able to tell exactly how much memory we're taking up, since infinitely creating objects at runtime can quickly get out of hand. 🥚</li>
+        <li>Being able to save/load everything found at runtime, because it can be valuable and hard-to-find. 💾</li>
+        <li>Being able to execute programs, to be able to actually do anything. 🐌</li>
+        <li>Being able to give feedback to an execution, to be able to learn. (Might be the same as 🦋.)</li>
+        <li>Being able to generate program fragments in a context in any way we want, splice in those fragments, and pick out the best, for picking and changing what we do. 🥪</li>
+        <li>Being able to integrate machine learning solutions, to make sure that our program evolution is working on common datasets. 🦋</li>
+        <li>Being able to evolve every part, including how-to-generate (subcontexts) and features (function bodies in the global context), since static towers hold no candle to self-searching beings. 🧅</li>
+        <li>Building trust, to exist via self-similarity rather than precision.</li>
+      </ol>
+      <p>Now, that is indeed a lot, but is also something unique. Let's get to it, one item at a time.</p>
+
+      <details>
+        <summary><h2>Memory management 🥚</h2></summary>
+        <p>[Talk about: why JS, why classes, and how to measure memory in (Node) JS.]</p>
+        <p>[Introduce the class Memory, with .add(byteCount) and null/Memory .owner.]</p>
+        <p>[Answer: what are fundamental object-lifetime operations? Just `replace(Old, New)` and `.enum(f){this.x.forEach(f)}`.]</p>
+        <p>[Explain that object reuse can lower GC overhead. Add `.init(...args)` and `.drop()` as fundamental class props.]</p>
+        <p>[Consider whether to go for ease-of-use (arg freeing by the caller) or immediate-free (arg freeing by the called).]</p>
+        <p>[Consider simple tracing GC, with a one-liner (objects must either be arrays or define a way to iterate their refs and have an .owner Memory).]</p>
+        <p>[Move to reference-counting with per-class freed-objects cache, with tracing GC on top to ensure full correctness.]</p>
+        <p>[Implement RC+reuse+GC.]</p>
+        <p>[Mention and discuss alternatives: cycle RC un/merging; manual linear-memory de/allocation.]</p>
+        <p>[Implement testing functions: replace.nothingNewExceptResult(func, ...args).]</p>
+        <p></p>
+        <p></p>
+        <p></p>
+        <p></p>
+        <p></p>
+      </details>
+
+      <details>
+        <summary><h2>Persistence 💾</h2></summary>
+        <p>[Talk about a few ways of achieving persistence: either with save/load functions, or with making every class a pointer and every getter an access and memory allocation done explicitly by us.]</p>
+        <p>[Propose and settle on an interface of save/load, and how it should be implemented by object classes to minimize effort.]</p>
+        <p></p>
+        <p></p>
+        <p></p>
+        <p></p>
+        <p></p>
+      </details>
+
+      <details>
+        <summary><h2>Internal representation 🐌</h2></summary>
+        <p>[…Justify the typed SSA format of functions' bodies (with quoted values and function calls)…]</p>
+        <p>[Introduce fundamental operations on a function's SSA: evaluate (a simple illustration: an array of values and a loop that computes them by calling functions) and splice (remove at index and add, to all subsequent indexes, the diff of items-added and items-removed).]</p>
+        <p>[Make evaluate (returning a task with and .stop() and .step() and .then(func)) and splice (with .onChange(func) assumptions and splice invalidating those assumptions) production-grade.]</p>
+        <p>["Not Turing-complete? Think again": implement an `if Cond ThenFunc ElseFunc …Args`. Implement tail-recursion for its evaluation (by making it define .step).]</p>
+        <p></p>
+        <p></p>
+        <p></p>
+        <p></p>
+        <p></p>
+        <p></p>
+      </details>
+
+      <details>
+        <summary><h2>Backpropagation</h2></summary>
+        <p>[Introduce the goal: learn the example `f(n) = 16 + 8*n` (and any other arbitrary numbers) knowing the structure `x + y*n` via telling "no, a little more" and "no, a little less".]</p>
+        <p>[Introduce the second goal: learn the example `f(n) = 18 + 9*n + Math.random()*1e-3`.]</p>
+        <p>[…Introduce the fundamental operation that will give us the ability to adjust execution… Implement it… Use it to adjust structure randomly…]</p>
+        <p></p>
+        <p></p>
+        <p></p>
+      </details>
+
+      <details>
+        <summary><h2>Program generation 🥪</h2></summary>
+        <p>[Introduce the goal: learn the examples `f(n) = 16 + 8*n` and `f(x,y) = x&lt;10 ? x*2 : y/2 + Math.random()*1e-9` (and any other arbitrary numbers and structure) with just arithmetic and comparison/branching operations.]</p>
+        <p>[Justify [all, …]/[any, …] — symmetric in input/output search…]</p>
+        <p>[…Introduce the fundamental operation to generate output given input… Implement it… Use it to generate learnable samples…]</p>
+        <p>[Show how to pattern-match given `any` and decompose given `all`, and create a random one needing `any` and create all needing `all`.]</p>
+        <p>[…Introduce random-change-inside backprop, and explain where it should be used… Use it…]</p>
+        <p>[Add backprop-alterer nodes (like surety, a divisor of change), and make them randomly insertable/removable.]</p>
+        <p></p>
+        <p></p>
+        <p></p>
+        <p></p>
+      </details>
+
+      <details>
+        <summary><h2>Learning in a program 🦋</h2></summary>
+        <p>/* We probably mostly want to assimilate feature-vectors and learnable text and image comprehension via this? */</p>
+        <p></p>
+        <p></p>
+        <p></p>
+        <p></p>
+        <p></p>
+        <p></p>
+      </details>
+
+      <details>
+        <summary><h2>Learning programs 🧅</h2></summary>
+        <p>[Introduce the goal: given a function-to-learn generator, timing function (meta-measure), in/out types, available operations, and available memory, create the generator that learns such things the best.]</p>
+        <p>[…Introduce randomly-alterable contexts (random subcontext, filtered subcontext, and turning quoted contexts into alterable ones)…]</p>
+        <p>[Introduce the dynamically-learnable function, and have alteration functions that add those to a context.]</p>
+        <p>[Introduce the dynamically-learnable inlining backprop.]</p>
+        <p></p>
+        <p></p>
+        <p></p>
+        <p></p>
+        <p></p>
+        <p></p>
+      </details>
+
+      <details>
+        <summary><h2>Building trust</h2></summary>
+        <p>[State the goal: replace a global function with its "behaves like this" version. Create a better version of it so the shadow will switch to the new one. Meme about "the fire fades, and the lords go without thrones".]</p>
+        <p>[Add basic primitives that allow implementing the language in itself.]</p>
+        <p></p>
+        <p></p>
+        <p></p>
+        <p></p>
+        <p></p>
+      </details>
+    </div>
+	</body>
+
+
+</html>
